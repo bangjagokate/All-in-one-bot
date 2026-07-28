@@ -2,7 +2,7 @@ require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const axios = require('axios');
 const cron = require('node-cron');
-const Database = require('better-sqlite3');
+const sqlite3 = require('sqlite3').verbose();
 
 // Config Environment
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -10,25 +10,29 @@ const OPENWEATHER_KEY = process.env.OPENWEATHER_API_KEY;
 const BINDERBYTE_KEY = process.env.BINDERBYTE_API_KEY;
 
 const bot = new TelegramBot(TOKEN, { polling: true });
-const db = new Database('database.db');
+const db = new sqlite3.Database('database.db');
 
 // Inisialisasi Database
-db.exec(`
-  CREATE TABLE IF NOT EXISTS users (
-    chat_id TEXT PRIMARY KEY,
-    kota_id TEXT,
-    nama_kota TEXT
-  );
-  CREATE TABLE IF NOT EXISTS tracked_resi (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    chat_id TEXT,
-    courier TEXT,
-    awb TEXT,
-    last_status TEXT,
-    is_delivered INTEGER DEFAULT 0,
-    UNIQUE(chat_id, awb)
-  );
-`);
+db.serialize(() => {
+  db.run(`
+    CREATE TABLE IF NOT EXISTS users (
+      chat_id TEXT PRIMARY KEY,
+      kota_id TEXT,
+      nama_kota TEXT
+    )
+  `);
+  db.run(`
+    CREATE TABLE IF NOT EXISTS tracked_resi (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_id TEXT,
+      courier TEXT,
+      awb TEXT,
+      last_status TEXT,
+      is_delivered INTEGER DEFAULT 0,
+      UNIQUE(chat_id, awb)
+    )
+  `);
+});
 
 console.log('Bot @jagosemuanya_bot dengan Auto-Notifikasi berjalan...');
 
@@ -70,10 +74,14 @@ bot.onText(/\/setlokasi (.+)/, async (msg, match) => {
     const kotaId = searchRes.data.data[0].id;
     const namaKota = searchRes.data.data[0].lokasi;
 
-    const stmt = db.prepare('INSERT OR REPLACE INTO users (chat_id, kota_id, nama_kota) VALUES (?, ?, ?)');
-    stmt.run(chatId.toString(), kotaId, namaKota);
-
-    bot.sendMessage(chatId, `✅ *Lokasi berhasil diatur ke ${namaKota}!*\nKamu akan menerima notifikasi otomatis setiap kali masuk waktu sholat.`, { parse_mode: 'Markdown' });
+    db.run(
+      'INSERT OR REPLACE INTO users (chat_id, kota_id, nama_kota) VALUES (?, ?, ?)',
+      [chatId.toString(), kotaId, namaKota],
+      (err) => {
+        if (err) return bot.sendMessage(chatId, `❌ Gagal menyimpan lokasi.`);
+        bot.sendMessage(chatId, `✅ *Lokasi berhasil diatur ke ${namaKota}!*\nKamu akan menerima notifikasi otomatis setiap kali masuk waktu sholat.`, { parse_mode: 'Markdown' });
+      }
+    );
   } catch (error) {
     bot.sendMessage(chatId, `❌ Gagal mengatur lokasi.`, { parse_mode: 'Markdown' });
   }
@@ -124,47 +132,48 @@ bot.onText(/\/sholat (.+)/, async (msg, match) => {
 });
 
 // Cron Job: Pengecekan Waktu Sholat Setiap Menit
-cron.schedule('* * * * *', async () => {
-  const users = db.prepare('SELECT * FROM users').all();
-  if (users.length === 0) return;
+cron.schedule('* * * * *', () => {
+  db.all('SELECT * FROM users', async (err, users) => {
+    if (err || !users || users.length === 0) return;
 
-  const now = new Date();
-  const options = { timeZone: 'Asia/Jakarta', hour12: false, hour: '2-digit', minute: '2-digit' };
-  const currentTime = now.toLocaleTimeString('id-ID', options).replace('.', ':');
+    const now = new Date();
+    const options = { timeZone: 'Asia/Jakarta', hour12: false, hour: '2-digit', minute: '2-digit' };
+    const currentTime = now.toLocaleTimeString('id-ID', options).replace('.', ':');
 
-  const yyyy = now.getFullYear();
-  const mm = String(now.getMonth() + 1).padStart(2, '0');
-  const dd = String(now.getDate()).padStart(2, '0');
+    const yyyy = now.getFullYear();
+    const mm = String(now.getMonth() + 1).padStart(2, '0');
+    const dd = String(now.getDate()).padStart(2, '0');
 
-  for (const user of users) {
-    try {
-      const jadwalUrl = `https://api.myquran.com/v2/sholat/jadwal/${user.kota_id}/${yyyy}/${mm}/${dd}`;
-      const jadwalRes = await axios.get(jadwalUrl);
-      const jadwal = jadwalRes.data.data.jadwal;
+    for (const user of users) {
+      try {
+        const jadwalUrl = `https://api.myquran.com/v2/sholat/jadwal/${user.kota_id}/${yyyy}/${mm}/${dd}`;
+        const jadwalRes = await axios.get(jadwalUrl);
+        const jadwal = jadwalRes.data.data.jadwal;
 
-      const waktuSholatList = {
-        'Subuh': jadwal.subuh,
-        'Dzuhur': jadwal.dzuhur,
-        'Ashar': jadwal.ashar,
-        'Maghrib': jadwal.maghrib,
-        'Isya': jadwal.isya
-      };
+        const waktuSholatList = {
+          'Subuh': jadwal.subuh,
+          'Dzuhur': jadwal.dzuhur,
+          'Ashar': jadwal.ashar,
+          'Maghrib': jadwal.maghrib,
+          'Isya': jadwal.isya
+        };
 
-      for (const [namaWaktu, jam] of Object.entries(waktuSholatList)) {
-        if (currentTime === jam) {
-          bot.sendMessage(
-            user.chat_id,
-            `🕌 *WAKTU SHOLAT TIBI!*\n\n` +
-            `Telah masuk waktu *${namaWaktu}* (${jam} WIB) untuk wilayah *${user.nama_kota}* dan sekitarnya.\n` +
-            `Mari sejenak menunaikan ibadah sholat. 🙏`,
-            { parse_mode: 'Markdown' }
-          );
+        for (const [namaWaktu, jam] of Object.entries(waktuSholatList)) {
+          if (currentTime === jam) {
+            bot.sendMessage(
+              user.chat_id,
+              `🕌 *WAKTU SHOLAT TIBA!*\n\n` +
+              `Telah masuk waktu *${namaWaktu}* (${jam} WIB) untuk wilayah *${user.nama_kota}* dan sekitarnya.\n` +
+              `Mari sejenak menunaikan ibadah sholat. 🙏`,
+              { parse_mode: 'Markdown' }
+            );
+          }
         }
+      } catch (e) {
+        console.error(e.message);
       }
-    } catch (err) {
-      console.error(`Gagal mengecek jadwal sholat user ${user.chat_id}:`, err.message);
     }
-  }
+  });
 });
 
 // ==========================================
@@ -236,14 +245,19 @@ bot.onText(/\/track (.+)/, async (msg, match) => {
       const lastDesc = history.length > 0 ? history[0].desc : 'Belum ada status';
       const isDelivered = data.data.summary.status.toLowerCase().includes('delivered') ? 1 : 0;
 
-      const stmt = db.prepare('INSERT OR REPLACE INTO tracked_resi (chat_id, courier, awb, last_status, is_delivered) VALUES (?, ?, ?, ?, ?)');
-      stmt.run(chatId.toString(), courier, awb, lastDesc, isDelivered);
+      db.run(
+        'INSERT OR REPLACE INTO tracked_resi (chat_id, courier, awb, last_status, is_delivered) VALUES (?, ?, ?, ?, ?)',
+        [chatId.toString(), courier, awb, lastDesc, isDelivered],
+        (err) => {
+          if (err) return bot.sendMessage(chatId, `❌ Gagal menyimpan data tracking.`);
 
-      if (isDelivered) {
-        bot.sendMessage(chatId, `📦 Resi \`${awb}\` sudah berketerangan *DELIVERED/TERIMA*. Auto-track tidak diaktifkan.`, { parse_mode: 'Markdown' });
-      } else {
-        bot.sendMessage(chatId, `✅ *Berhasil menambahkan resi \`${awb}\` ke Auto-Track!*\nBot akan memberikan notifikasi pesan jika ada update pergerakan paket.`, { parse_mode: 'Markdown' });
-      }
+          if (isDelivered) {
+            bot.sendMessage(chatId, `📦 Resi \`${awb}\` sudah berketerangan *DELIVERED/TERIMA*. Auto-track tidak diaktifkan.`, { parse_mode: 'Markdown' });
+          } else {
+            bot.sendMessage(chatId, `✅ *Berhasil menambahkan resi \`${awb}\` ke Auto-Track!*\nBot akan memberikan notifikasi pesan jika ada update pergerakan paket.`, { parse_mode: 'Markdown' });
+          }
+        }
+      );
     } else {
       bot.sendMessage(chatId, `❌ Resi tidak valid: ${data.message}`);
     }
@@ -255,18 +269,18 @@ bot.onText(/\/track (.+)/, async (msg, match) => {
 // Lihat daftar resi milik user
 bot.onText(/\/myresi/, (msg) => {
   const chatId = msg.chat.id;
-  const resis = db.prepare('SELECT * FROM tracked_resi WHERE chat_id = ? AND is_delivered = 0').all(chatId.toString());
+  db.all('SELECT * FROM tracked_resi WHERE chat_id = ? AND is_delivered = 0', [chatId.toString()], (err, resis) => {
+    if (err || !resis || resis.length === 0) {
+      return bot.sendMessage(chatId, '📭 Kamu tidak memiliki resi yang sedang di-track secara aktif.');
+    }
 
-  if (resis.length === 0) {
-    return bot.sendMessage(chatId, '📭 Kamu tidak memiliki resi yang sedang di-track secara aktif.');
-  }
+    let text = '📋 *DAFTAR AUTO-TRACK RESI AKTIF:*\n━━━━━━━━━━━━━━━━━━\n';
+    resis.forEach((r, idx) => {
+      text += `${idx + 1}. *${r.courier.toUpperCase()}* - \`${r.awb}\`\n Status Terakhir: _${r.last_status}_\n\n`;
+    });
 
-  let text = '📋 *DAFTAR AUTO-TRACK RESI AKTIF:*\n━━━━━━━━━━━━━━━━━━\n';
-  resis.forEach((r, idx) => {
-    text += `${idx + 1}. *${r.courier.toUpperCase()}* - \`${r.awb}\`\n Status Terakhir: _${r.last_status}_\n\n`;
+    bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
   });
-
-  bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
 });
 
 // Hapus resi dari tracking
@@ -274,59 +288,59 @@ bot.onText(/\/untrack (.+)/, (msg, match) => {
   const chatId = msg.chat.id;
   const awb = match[1].trim();
 
-  const stmt = db.prepare('DELETE FROM tracked_resi WHERE chat_id = ? AND awb = ?');
-  const result = stmt.run(chatId.toString(), awb);
-
-  if (result.changes > 0) {
-    bot.sendMessage(chatId, `✅ Resi \`${awb}\` berhasil dihapus dari daftar Auto-Track.`, { parse_mode: 'Markdown' });
-  } else {
-    bot.sendMessage(chatId, `❌ Resi \`${awb}\` tidak ditemukan dalam daftar kamu.`, { parse_mode: 'Markdown' });
-  }
+  db.run('DELETE FROM tracked_resi WHERE chat_id = ? AND awb = ?', [chatId.toString(), awb], function (err) {
+    if (err) return bot.sendMessage(chatId, `❌ Gagal menghapus resi.`);
+    if (this.changes > 0) {
+      bot.sendMessage(chatId, `✅ Resi \`${awb}\` berhasil dihapus dari daftar Auto-Track.`, { parse_mode: 'Markdown' });
+    } else {
+      bot.sendMessage(chatId, `❌ Resi \`${awb}\` tidak ditemukan dalam daftar kamu.`, { parse_mode: 'Markdown' });
+    }
+  });
 });
 
 // Cron Job: Pengecekan Update Resi Otomatis Setiap 30 Menit
-cron.schedule('*/30 * * * *', async () => {
-  const resiList = db.prepare('SELECT * FROM tracked_resi WHERE is_delivered = 0').all();
-  if (resiList.length === 0) return;
+cron.schedule('*/30 * * * *', () => {
+  db.all('SELECT * FROM tracked_resi WHERE is_delivered = 0', async (err, resiList) => {
+    if (err || !resiList || resiList.length === 0) return;
 
-  for (const item of resiList) {
-    try {
-      const url = `https://api.binderbyte.com/v1/track?api_key=${BINDERBYTE_KEY}&courier=${item.courier}&awb=${item.awb}`;
-      const response = await axios.get(url);
-      const data = response.data;
+    for (const item of resiList) {
+      try {
+        const url = `https://api.binderbyte.com/v1/track?api_key=${BINDERBYTE_KEY}&courier=${item.courier}&awb=${item.awb}`;
+        const response = await axios.get(url);
+        const data = response.data;
 
-      if (data.status === 200) {
-        const summary = data.data.summary;
-        const history = data.data.history;
-        const latestHistory = history.length > 0 ? history[0] : null;
+        if (data.status === 200) {
+          const summary = data.data.summary;
+          const history = data.data.history;
+          const latestHistory = history.length > 0 ? history[0] : null;
 
-        if (latestHistory && latestHistory.desc !== item.last_status) {
-          const isDelivered = summary.status.toLowerCase().includes('delivered') ? 1 : 0;
+          if (latestHistory && latestHistory.desc !== item.last_status) {
+            const isDelivered = summary.status.toLowerCase().includes('delivered') ? 1 : 0;
 
-          // Update DB
-          db.prepare('UPDATE tracked_resi SET last_status = ?, is_delivered = ? WHERE id = ?')
-            .run(latestHistory.desc, isDelivered, item.id);
+            // Update DB
+            db.run('UPDATE tracked_resi SET last_status = ?, is_delivered = ? WHERE id = ?', [latestHistory.desc, isDelivered, item.id]);
 
-          // Kirim Notifikasi
-          let notifMsg = `🚚 *UPDATE PERGERAKAN PAKET!*\n` +
-            `━━━━━━━━━━━━━━━━━━\n` +
-            `🔹 *Kurir:* ${summary.courier.toUpperCase()}\n` +
-            `🔹 *No Resi:* \`${summary.awb}\`\n` +
-            `🔹 *Status:* *${summary.status}*\n\n` +
-            `📌 *Waktu:* ${latestHistory.date}\n` +
-            `📝 *Keterangan Baru:* ${latestHistory.desc}`;
+            // Kirim Notifikasi
+            let notifMsg = `🚚 *UPDATE PERGERAKAN PAKET!*\n` +
+              `━━━━━━━━━━━━━━━━━━\n` +
+              `🔹 *Kurir:* ${summary.courier.toUpperCase()}\n` +
+              `🔹 *No Resi:* \`${summary.awb}\`\n` +
+              `🔹 *Status:* *${summary.status}*\n\n` +
+              `📌 *Waktu:* ${latestHistory.date}\n` +
+              `📝 *Keterangan Baru:* ${latestHistory.desc}`;
 
-          if (isDelivered) {
-            notifMsg += `\n\n🎉 *Paket telah sampai/diterima! Auto-tracking dikentikan.*`;
+            if (isDelivered) {
+              notifMsg += `\n\n🎉 *Paket telah sampai/diterima! Auto-tracking dihentikan.*`;
+            }
+
+            bot.sendMessage(item.chat_id, notifMsg, { parse_mode: 'Markdown' });
           }
-
-          bot.sendMessage(item.chat_id, notifMsg, { parse_mode: 'Markdown' });
         }
+      } catch (e) {
+        console.error(e.message);
       }
-    } catch (err) {
-      console.error(`Gagal mengecek update resi ${item.awb}:`, err.message);
     }
-  }
+  });
 });
 
 // ==========================================
