@@ -1,7 +1,7 @@
 {
   "name": "telegram-multi-bot",
-  "version": "1.1.0",
-  "description": "Telegram Bot Cek Resi Auto-Track, Cuaca, dan Notifikasi Sholat",
+  "version": "1.2.0",
+  "description": "Telegram Bot Menu Interaktif Cek Resi, Cuaca, dan Jadwal Sholat",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
@@ -9,8 +9,6 @@
   "dependencies": {
     "node-telegram-bot-api": "^0.66.0",
     "axios": "^1.7.0",
-    "dotenv": "^16.4.5",
-    "node-cron": "^3.0.3",
-    "sqlite3": "^5.1.7"
+    "dotenv": "^16.4.5"
   }
 }
