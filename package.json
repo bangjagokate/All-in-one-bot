@@ -1,10 +1,10 @@
 {
-  "name": "telegram-multi-bot",
-  "version": "1.2.0",
-  "description": "Telegram Bot Menu Interaktif Cek Resi, Cuaca, dan Jadwal Sholat",
-  "main": "index.js",
+  "name": "telegram-bot-vercel",
+  "version": "1.0.0",
+  "description": "Telegram Bot di Vercel Tanpa Polling",
+  "main": "api/webhook.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node api/webhook.js"
   },
   "dependencies": {
     "node-telegram-bot-api": "^0.66.0",
